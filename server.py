@@ -88,22 +88,25 @@ class MyWebServer(socketserver.BaseRequestHandler):
 
 
     def handleGetRequest(self):
-        if not isURLWithinWebDomain( self.httpData.contentURL ):
+        if not resolve( self.httpData.contentURL ):
             self.sendNotFoundHTTPResponse()
             return 
 
         try:
             with open( self.httpData.contentURL ) as f:
-                body, length, contentType = getContent( self.httpData.contentURL, f )
-                self.sendHttpResponse( HTTP_OK, {
-                    "Connection" : "close",
-                    "Content-Type" : contentType, 
-                    "Content-Length" : str( length )
-                }, body)
+                self.sendGetResponse(f)
         except IsADirectoryError:
             self.sendFolderRedirectResponse()
         except FileNotFoundError:
             self.sendNotFoundHTTPResponse()
+
+    def sendGetResponse(self, f):
+        body, length, contentType = getContent( self.httpData.contentURL, f )
+        self.sendHttpResponse( HTTP_OK, {
+            "Connection" : "close",
+            "Content-Type" : contentType, 
+            "Content-Length" : str( length )
+        }, body)
 
     def sendFolderRedirectResponse(self):
         self.sendHttpResponse( HTTP_MOVED_PERMANENTLY, { 
@@ -139,7 +142,7 @@ class HTTPRequest:
         # NOTE: Ignoring body & protocol; not part of assignment spec
         self.method, _, payload = payload.partition(" ")
         self.urlString, _, payload = payload.partition(" ")
-        self.contentURL = webPagesPath + self.urlString.removeprefix('/')
+        self.contentURL = resolve( webPagesPath + self.urlString.removeprefix('/') )
         payload = payload.partition("\r\n")[2]
 
         if self.urlString.endswith('/'):
@@ -210,33 +213,27 @@ def hasHtmlSuffix(url : str):
 def hasCssSuffix(url : str):
     return url.endswith('.css')
 
-# Assumes it is in form "./www{url}"
-def isURLWithinWebDomain(url : str):
-    # One consideration : should reject all URLs that nest outside ./www/ folder certain number of paths. (possibly even just once)
-    # For example : if ./www/../../../app/group/content/www/content.html is accepted, then clients could possibly peek at the file structure of the web app
-    
-    # Or any ../ outside the ./www/ should be interpreted as a void operation. so ./www/../../../../../base.css maps to ./www/base.css
-    
-
-    # For my case, access to any folder that is not in ./www/ will be rejected
-    # So any path deeper than './www' will be rejected since going back to the ./www directory 
-    # would imply knowing the file structure outside the ./www directory 
-    # It also makes this algorithm simpler to implement. 
-
-    step, _, traversal = url.partition('./www')     # Remove './'
-    depth = 0       # how deep into/away from ./www directory; negative for away, positive for in
-    while '/' in traversal and depth >= -1:
+# Assume in form of './www{url}'
+def resolve(url : str):
+    # https://eclass.srv.ualberta.ca/mod/forum/discuss.php?d=2330698
+    # Pathing outside ./www directory will be ignored 
+        
+    traversal = url.removeprefix('./')
+    parents = []
+    while '/' in traversal:
         step, _, traversal = traversal.partition('/')
         
         if step == '..':
-            depth -= 1
+            if len(parents) > 1:
+                parents.pop()
         else:
-            # Allows edge case : ./www/../www. I don't think it should, but I don't know what the test cases are like
-            if depth == -1 and step != 'www':
-                break 
-            depth += 1
-        
-    return depth >= 0
+            parents.append(step)
+
+    res = './' + '/'.join(parents)
+    if len(parents) > 0:
+        res += '/'
+    res += traversal
+    return res
 
 def log(str):
     if debug:
