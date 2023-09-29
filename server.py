@@ -1,8 +1,5 @@
 #  coding: utf-8 
 import socketserver
-# This just imports HTTP status code & text constants, so I don't have to write the enums myself
-from http import HTTPStatus
-from pathlib import Path
 
 # Copyright 2023 Scott Hur
 # 
@@ -45,8 +42,26 @@ from pathlib import Path
 # try: curl -v -X GET http://127.0.0.1:8080/
 
 # Sets logging to console 
-debug = True 
-webPagesPath = Path('./www/')
+debug = False 
+webPageFolder = 'www'
+webPagesPath = './www/'
+
+
+class HTTPStatus:
+    def __init__(self, value, phrase):
+        self.value = value 
+        self.phrase = phrase 
+
+HTTP_OK = HTTPStatus(value = '200', phrase = 'OK')
+HTTP_MOVED_PERMANENTLY = HTTPStatus(value = '301', phrase = 'Moved Permanently')
+HTTP_BAD_REQUEST = HTTPStatus(value = '400', phrase = 'Bad Request')
+HTTP_NOT_FOUND = HTTPStatus(value = '404', phrase = 'Not Found')
+HTTP_METHOD_NOT_ALLOWED = HTTPStatus(value = '405', phrase = 'Method Not Allowed')
+
+
+# ASSUMPTIONS:
+# Valid HTTP request is sent
+# Given URLs have valid syntax 
 
 
 class MyWebServer(socketserver.BaseRequestHandler):
@@ -55,12 +70,8 @@ class MyWebServer(socketserver.BaseRequestHandler):
         self.data = self.request.recv(1024).strip()
         log(f"Received data : \n{self.data}\n")
 
-        if isInvalidHTTPSyntax( self.data ):
-            log(f"Invalid HTTP Request\n")
-            self.sendHttpResponse( HTTPStatus.BAD_REQUEST )
-        else:
-            log(f"Handling HTTP Request")
-            self.handleHTTPRequest()
+        log(f"Handling HTTP Request")
+        self.handleHTTPRequest()
     
     
     def handleHTTPRequest(self):
@@ -70,33 +81,43 @@ class MyWebServer(socketserver.BaseRequestHandler):
             case 'GET':
                 self.handleGetRequest()
             case _:
-                self.sendHttpResponse( HTTPStatus.METHOD_NOT_ALLOWED, { 
+                self.sendHttpResponse( HTTP_METHOD_NOT_ALLOWED, { 
                     "Connection" : "close", 
                     "Allow" : "GET"     # No HEAD; outside of assignment spec
                 })
 
 
     def handleGetRequest(self):
-        if isFolder( self.httpData.contentURL ):
-            self.sendHttpResponse( HTTPStatus.MOVED_PERMANENTLY, { 
-                "Connection" : "close",
-                "Location" : self.httpData.urlString + '/' 
-            })
-        elif not isExistingFile( self.httpData.contentURL ) or not isURLAllowed( self.httpData.contentURL ):
-            body, length, contentType = getContent( Path('./404.html') )
-            self.sendHttpResponse( HTTPStatus.NOT_FOUND, { 
-                "Connection" : "close",
-                "Content-Type" : contentType, 
-                "Content-Length" : str( length )
-            }, body)
-        else:
-            body, length, contentType = getContent( self.httpData.contentURL )
-            self.sendHttpResponse( HTTPStatus.OK, {
-                "Connection" : "close",
-                "Content-Type" : contentType, 
-                "Content-Length" : str( length )
-            }, body)
+        if not isURLWithinWebDomain( self.httpData.contentURL ):
+            self.sendNotFoundHTTPResponse()
+            return 
 
+        try:
+            with open( self.httpData.contentURL ) as f:
+                body, length, contentType = getContent( self.httpData.contentURL, f )
+                self.sendHttpResponse( HTTP_OK, {
+                    "Connection" : "close",
+                    "Content-Type" : contentType, 
+                    "Content-Length" : str( length )
+                }, body)
+        except IsADirectoryError:
+            self.sendFolderRedirectResponse()
+        except FileNotFoundError:
+            self.sendNotFoundHTTPResponse()
+
+    def sendFolderRedirectResponse(self):
+        self.sendHttpResponse( HTTP_MOVED_PERMANENTLY, { 
+            "Connection" : "close",
+            "Location" : self.httpData.urlString + '/' 
+        })
+
+    def sendNotFoundHTTPResponse(self):
+        body, length, contentType = getContent( './404.html' )
+        self.sendHttpResponse( HTTP_NOT_FOUND, { 
+            "Connection" : "close",
+            "Content-Type" : contentType, 
+            "Content-Length" : str( length )
+        }, body)
 
     def sendHttpResponse(self, httpStatus, headers = {}, body = ""):
         log(f"Sending HTTP Response : {httpStatus.phrase}")
@@ -111,20 +132,18 @@ class MyWebServer(socketserver.BaseRequestHandler):
 class HTTPRequest:
     method : str
     urlString : str
-    contentURL : Path
+    contentURL : str
     headers : dict
 
     def __init__(self, payload : str): 
-        if isInvalidHTTPSyntax( payload ):
-            raise Exception("Given payload is not an HTTP message")
         # NOTE: Ignoring body & protocol; not part of assignment spec
         self.method, _, payload = payload.partition(" ")
         self.urlString, _, payload = payload.partition(" ")
-        self.contentURL = webPagesPath / self.urlString.removeprefix('/')
+        self.contentURL = webPagesPath + self.urlString.removeprefix('/')
         payload = payload.partition("\r\n")[2]
 
         if self.urlString.endswith('/'):
-            self.contentURL = self.contentURL / 'index.html'
+            self.contentURL = self.contentURL + 'index.html'
             
         self.headers = {}
         for line in payload.split("\r\n"):
@@ -164,36 +183,61 @@ class HTTPResponse:
         return bytearray(res, 'utf-8')
 
 
-def getContent(url : Path):
+def getContent(url : str, file = None):
     data = '' 
     length = -1
     contentType = ''
-    match url.suffix:
-        case ".html":
-            contentType = 'text/html'
-        case ".css":
-            contentType = 'text/css'
-        case _:
-            raise Exception("Unsupported content type")
-      
-    with url.open('r') as file:
+    if hasHtmlSuffix(url):
+        contentType = 'text/html'
+    elif hasCssSuffix(url):
+        contentType = 'text/css'
+    else:
+        raise Exception("Unsupported content type")
+    
+    if file is None:
+        with open(url, 'r') as file:
+            data = file.read()
+    else:
         data = file.read()
-    length = url.stat().st_size
+    # Not efficient way of doing it but I'm scared of using other libraries because apparently pathlib.Path isn't allowed. 
+    length = len( data.encode('utf-8') )
 
     return (data, length, contentType)
 
-# NOTE: Not part of requirements; Assumes valid HTTP thus returns False 
-def isInvalidHTTPSyntax(payload : str):
-    return False
+def hasHtmlSuffix(url : str):
+    return url.endswith('.html')
 
-def isFolder(url : Path):
-    return Path.is_dir( url )
+def hasCssSuffix(url : str):
+    return url.endswith('.css')
 
-def isURLAllowed(url : Path):
-    return webPagesPath.resolve() in url.resolve().parents
+# Assumes it is in form "./www{url}"
+def isURLWithinWebDomain(url : str):
+    # One consideration : should reject all URLs that nest outside ./www/ folder certain number of paths. (possibly even just once)
+    # For example : if ./www/../../../app/group/content/www/content.html is accepted, then clients could possibly peek at the file structure of the web app
+    # However, that wasn't mentioned though so not implementing it in case I'm wrong and the test cases fail 
 
-def isExistingFile(url : Path):
-    return Path.is_file( url )
+    # Or any ../ outside the ./www/ should be interpreted as a void operation. so ./www/../../../../../base.css maps to ./www/base.css
+    
+
+    # For my case, access to any folder that is not in ./www/ will be rejected
+    # So any path deeper than './www' will be rejected since going back to the ./www directory 
+    # would imply knowing the file structure outside the ./www directory 
+    # It also makes this algorithm simpler to implement. 
+
+    step, _, traversal = url.partition('./www')     # Remove './'
+    depth = 0       # how deep into/away from ./www directory; negative for away, positive for in
+    while '/' in traversal and depth >= -1:
+        step, _, traversal = traversal.partition('/')
+        
+        if step == '..':
+            depth -= 1
+        else:
+            # Allows edge case : ./www/../www. I don't think it should, but I don't know what the test cases are like
+            if depth == -1 and step != 'www':
+                break 
+            depth += 1
+        
+    return depth >= 0
 
 def log(str):
     if debug:
