@@ -214,8 +214,7 @@ def hasCssSuffix(url : str):
 def isURLWithinWebDomain(url : str):
     # One consideration : should reject all URLs that nest outside ./www/ folder certain number of paths. (possibly even just once)
     # For example : if ./www/../../../app/group/content/www/content.html is accepted, then clients could possibly peek at the file structure of the web app
-    # However, that wasn't mentioned though so not implementing it in case I'm wrong and the test cases fail 
-
+    
     # Or any ../ outside the ./www/ should be interpreted as a void operation. so ./www/../../../../../base.css maps to ./www/base.css
     
 

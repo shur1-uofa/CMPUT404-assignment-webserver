@@ -34,6 +34,9 @@ class URLTestCase(unittest.TestCase):
     def test_looping_outside_web_domain(self):
         self.assertTrue( server.isURLWithinWebDomain('./www/../www/../www/../www/base.css') )
 
+    def test_looping_within_web_domain(self):
+        self.assertTrue( server.isURLWithinWebDomain('./www/folder1/../folder2/../folder2/../base.css') )
+
 
 class HTTPRequestTestCase(unittest.TestCase):
     def test_ex(self):
